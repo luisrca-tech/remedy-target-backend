@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "app": {
+    "directory": ".",
+    "packageManager": "bun"
+  },
+  "setup": {
+    "name": "install",
+    "command": "bun install --frozen-lockfile",
+    "timeoutSeconds": 300
+  },
+  "checks": [
+    {
+      "name": "test",
+      "command": "bun run test",
+      "timeoutSeconds": 600
+    },
+    {
+      "name": "typecheck",
+      "command": "bun run typecheck",
+      "timeoutSeconds": 300
+    },
+    {
+      "name": "lint",
+      "command": "bun run lint",
+      "timeoutSeconds": 300
+    }
+  ],
+  "preview": {
+    "provider": "github-deployment",
+    "environmentPattern": "remediation-*",
+    "timeoutSeconds": 900
+  },
+  "fixtures": {
+    "seed": {
+      "name": "seed-test-tenant",
+      "command": "bun run db:seed",
+      "timeoutSeconds": 120
+    },
+    "reset": {
+      "name": "reset-test-tenant",
+      "command": "bun run db:reset",
+      "timeoutSeconds": 120
+    },
+    "testTenant": "remedy-target-test"
+  },
+  "harnesses": {
+    "browser": false,
+    "http": true,
+    "httpScenarios": [
+      {
+        "name": "orders-null-coupon",
+        "method": "GET",
+        "path": "/orders/ord_null_coupon",
+        "headers": {},
+        "reproduceOnStatus": [500]
+      }
+    ],
+    "commands": []
+  },
+  "security": {
+    "secretRefs": ["DATABASE_URL", "SENTRY_DSN"],
+    "allowedEgress": ["api.github.com", "sentry.io", "*.neon.tech", "*.railway.app"],
+    "allowedSandboxEndpoints": []
+  },
+  "sandbox": {
+    "cpuLimit": 2,
+    "memoryLimitMb": 4096,
+    "diskQuotaMb": 10240
+  },
+  "observation": {
+    "windowDays": 7,
+    "releaseDetectionTimeoutDays": 7
+  },
+  "patch": {
+    "maxFiles": 8,
+    "maxLines": 350,
+    "forbiddenPaths": ["migrations/", "infra/", "src/auth/"],
+    "highRisk": {
+      "dependencies": false,
+      "migrations": false,
+      "authentication": false,
+      "infrastructure": false
+    }
+  }
+}
