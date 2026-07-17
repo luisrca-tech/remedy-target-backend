@@ -112,7 +112,9 @@ SENTRY_ENVIRONMENT=development
 # Release marker (Railway injects this in prod)
 RAILWAY_GIT_COMMIT_SHA=
 
-# Bug selection (window discipline; empty during checks)
+# Bug selection (empty during checks). Forms: BH1 | ALL | ALL,BH2 | ALL,-BH2
+# Without ALL, ids are includes; with ALL, a bare id excludes it.
+# A live Remedy window must enable EXACTLY ONE bug; ALL is local-dev only.
 ENABLED_BUGS=
 
 # Server port
@@ -183,6 +185,10 @@ A **test window** is one validation run of Remedy with exactly one seeded bug en
 5. Repeat for the next bug
 
 Concurrent windows corrupt the shared Remedy workspace. **Always serialize.**
+
+> `ENABLED_BUGS` also accepts `ALL` and `ALL,<id>` (all-except) for **local
+> exploration only**. Never run a Remedy window on a multi-bug selection — a
+> window enables exactly one bug.
 
 ## Further Reading
 

@@ -1,4 +1,4 @@
-import { describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 
 /**
  * Route tests for `GET /orders/:id` with BH1 dormant (the default `checks`
@@ -23,6 +23,21 @@ mock.module("../src/db/client.ts", () => ({
 const { createApp } = await import("../src/app.ts");
 
 describe("GET /orders/:id (BH1 dormant)", () => {
+  // Force BH1 dormant regardless of the ambient environment. Bun auto-loads
+  // `.env`, which may set `ENABLED_BUGS` (e.g. `ALL`) — these tests must be
+  // deterministic and not inherit that.
+  const savedEnabledBugs = process.env.ENABLED_BUGS;
+  beforeEach(() => {
+    process.env.ENABLED_BUGS = "";
+  });
+  afterEach(() => {
+    if (savedEnabledBugs === undefined) {
+      delete process.env.ENABLED_BUGS;
+    } else {
+      process.env.ENABLED_BUGS = savedEnabledBugs;
+    }
+  });
+
   it("guards a null coupon and returns a zero discount", async () => {
     currentRows = [{ id: "ord_null_coupon", coupon: null, total: 500 }];
 
