@@ -1,0 +1,31 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: remedy
+      POSTGRES_PASSWORD: remedy
+      POSTGRES_DB: remedy_target
+    ports:
+      - "5432:5432"
+    volumes:
+      - remedy_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U remedy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://remedy:remedy@db:5432/remedy_target
+    command: ["bun", "run", "dev"]
+
+volumes:
+  remedy_db_data:
