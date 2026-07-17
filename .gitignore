@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Env / secrets — never commit real values
+.env
+.env.local
+.env.*.local
+
+# Build output
+dist/
+build/
+
+# Logs
+*.log
+npm-debug.log*
+bun-debug.log*
+
+# Drizzle generated SQL journal artifacts are committed; local scratch is not
+drizzle/meta/_journal.tmp
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Test / coverage
+coverage/
