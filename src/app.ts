@@ -3,6 +3,7 @@ import { Hono } from "hono";
 
 import { sentryHttpMethod } from "./middleware/sentryHttpMethod.ts";
 import { ordersRoute } from "./routes/orders.ts";
+import { signupRoute } from "./routes/signup.ts";
 
 /**
  * Builds the Hono application. Kept as a factory so tests can construct a fresh
@@ -23,6 +24,9 @@ export function createApp(): Hono {
 
   // Seeded business route (T1.4). Hosts the BH1 defect (gated by ENABLED_BUGS).
   app.route("/orders", ordersRoute);
+
+  // Seeded business route. Hosts the BH2 signup-contract defect (gated by ENABLED_BUGS).
+  app.route("/signup", signupRoute);
 
   // App-level error handler: capture the uncaught exception to Sentry (turning
   // it into a real incident) and return a 500 JSON response. The error is
