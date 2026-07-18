@@ -56,7 +56,13 @@
         "reproduceOnStatus": [500]
       }
     ],
-    "commands": []
+    "commands": [
+      {
+        "name": "daily-digest",
+        "command": "bun run job:digest",
+        "timeoutSeconds": 120
+      }
+    ]
   },
   "security": {
     "secretRefs": ["DATABASE_URL", "SENTRY_DSN"],
