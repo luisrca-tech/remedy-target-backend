@@ -14,7 +14,24 @@ export type AppEnv = {
   RAILWAY_GIT_COMMIT_SHA: string | undefined;
   ENABLED_BUGS: string;
   PORT: number;
+  /**
+   * Browser origins allowed to call this API cross-origin, comma-separated.
+   * The sibling frontend calls these endpoints directly from the browser, so
+   * the deployed frontend origin must be listed here in prod.
+   */
+  CORS_ORIGINS: string[];
 };
+
+/** Next.js dev server origin; the local sibling frontend. */
+const DEFAULT_CORS_ORIGINS = ["http://localhost:3000"];
+
+function parseCorsOrigins(raw: string | undefined): string[] {
+  const parsed = (raw ?? "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0);
+  return parsed.length > 0 ? parsed : DEFAULT_CORS_ORIGINS;
+}
 
 export function readEnv(source: Record<string, string | undefined> = process.env): AppEnv {
   return {
@@ -27,6 +44,7 @@ export function readEnv(source: Record<string, string | undefined> = process.env
     // convention, and both apps run side by side during local development.
     // Railway injects PORT at runtime, so prod is unaffected by this default.
     PORT: source.PORT ? Number(source.PORT) : 8000,
+    CORS_ORIGINS: parseCorsOrigins(source.CORS_ORIGINS),
   };
 }
 

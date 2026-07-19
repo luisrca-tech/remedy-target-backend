@@ -152,7 +152,43 @@ ENABLED_BUGS=
 
 # Server port
 PORT=8000
+
+# Comma-separated browser origins allowed to call this API cross-origin.
+# Defaults to http://localhost:3000 (Next.js dev) when unset.
+# In prod, add the deployed frontend origin (Vercel).
+CORS_ORIGINS=http://localhost:3000
 ```
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `DATABASE_URL` | yes | — | Postgres connection string |
+| `SENTRY_DSN` | no | empty (capture disabled) | Backend Sentry project DSN |
+| `SENTRY_ENVIRONMENT` | no | `development` | Sentry environment tag |
+| `RAILWAY_GIT_COMMIT_SHA` | no | — | Becomes the Sentry `release` |
+| `ENABLED_BUGS` | no | empty (all dormant) | Seeded-bug selection; one id per window |
+| `PORT` | no | `8000` | HTTP listen port |
+| `CORS_ORIGINS` | no | `http://localhost:3000` | Comma-separated allowed browser origins |
+
+## Routes
+
+| Route | Purpose |
+|-------|---------|
+| `GET /health` | Liveness probe |
+| `GET /orders/:id` | Order read; hosts the BH1 defect |
+| `POST /signup` | Signup; hosts the BH2 contract defect |
+| `GET /users/:id` | Plain user read for the browser client (no seeded defect) |
+| `GET /carts/:id/restore` | Plain cart restore for the browser client (no seeded defect) |
+
+`GET /users/:id` returns `{ id, email, address, preferences }`, with `address`
+and `preferences` passed through as `null` when absent; 404 `{ error: "User not found" }`.
+
+`GET /carts/:id/restore` returns `{ restored: Cart | null }`. An **expired cart
+is a legitimate 200 with `restored: null`**, not an error; only an unknown id is
+a 404 `{ error: "Cart not found" }`.
+
+These two routes are consumed cross-origin by the sibling
+`remedy-target-frontend`, whose own seeded defects (FB1, FB2) run against these
+real responses. Their origin must be present in `CORS_ORIGINS`.
 
 ## Checks
 
@@ -177,10 +213,10 @@ Seeded tables for the test tenant (`remedy-target-test`):
 
 ### users
 
-- **id** (text, PK): e.g., `usr_ok`, `usr_null_prefs`
+- **id** (text, PK): e.g., `usr_ok`, `usr_null_prefs`, `usr_null_address`
 - **email** (text): e.g., `ok@example.com`
 - **preferences** (jsonb, nullable): `{ digestOptIn: boolean; locale: string }` (null on `usr_null_prefs` — the BC1 repro row)
-- **address** (jsonb, nullable): `{ street: string; zip: string | null }`
+- **address** (jsonb, nullable): `{ street: string; zip: string | null }` (null on `usr_null_address` — the repro row for the **frontend** FB1 defect)
 - **tenantId** (text): Always `remedy-target-test`
 
 ### orders
@@ -196,6 +232,15 @@ Seeded tables for the test tenant (`remedy-target-test`):
 - **id** (text, PK): e.g., `prd_ok`, `prd_empty_cat`
 - **name** (text)
 - **category** (text): Empty string `""` for one seed row (`prd_empty_cat`) — an edge-case fixture; not currently read by any active bug
+- **tenantId** (text)
+
+### carts
+
+- **id** (text, PK): `cart_active`, `cart_expired`
+- **userId** (text): Owning user
+- **expiresAt** (timestamp): `cart_expired` sits in the past, so its restore returns `{ restored: null }` — the repro for the **frontend** FB2 defect
+- **items** (jsonb, nullable): `{ productId, name, quantity, unitPriceCents }[]`
+- **totalCents** (int)
 - **tenantId** (text)
 
 Seed rows are set up by `bun run db:seed`.

@@ -41,6 +41,30 @@ export const products = pgTable('products', {
 });
 
 /**
+ * Cart item shape stored inside `carts.items`.
+ */
+export type CartItem = {
+  productId: string;
+  name: string;
+  quantity: number;
+  unitPriceCents: number;
+};
+
+/**
+ * Carts table: stores per-user carts consumed by the browser (`GET /carts/:id/restore`).
+ * expiresAt is load-bearing: a cart whose expiry is in the past restores as null.
+ */
+export const carts = pgTable('carts', {
+  id: text('id').primaryKey(),
+  tenantId: text('tenant_id').notNull(),
+  userId: text('user_id').notNull(),
+  expiresAt: timestamp('expires_at').notNull(),
+  items: jsonb('items').$type<CartItem[]>(),
+  totalCents: integer('total_cents').notNull().default(0),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+/**
  * Inferred types for runtime use.
  */
 export type User = typeof users.$inferSelect;
@@ -49,3 +73,5 @@ export type Order = typeof orders.$inferSelect;
 export type OrderInsert = typeof orders.$inferInsert;
 export type Product = typeof products.$inferSelect;
 export type ProductInsert = typeof products.$inferInsert;
+export type Cart = typeof carts.$inferSelect;
+export type CartInsert = typeof carts.$inferInsert;
