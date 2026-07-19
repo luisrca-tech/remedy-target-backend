@@ -21,7 +21,7 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "3000:3000"
+      - "8000:8000"
     env_file: .env
     environment:
       DATABASE_URL: postgres://remedy:remedy@db:5432/remedy_target

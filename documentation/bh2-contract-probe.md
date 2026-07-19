@@ -61,12 +61,12 @@ The distinction is the whole point of this probe: not "does it still crash?" but
 
 ```bash
 # Correct contract (default): 400 on missing email
-curl -i -X POST localhost:3000/signup -H 'content-type: application/json' -d '{}'
+curl -i -X POST localhost:8000/signup -H 'content-type: application/json' -d '{}'
 # -> HTTP 400 { "error": "email is required", "field": "email" }
 
 # Seeded defect: 500 on missing email
 ENABLED_BUGS=BH2 bun run start
-curl -i -X POST localhost:3000/signup -H 'content-type: application/json' -d '{}'
+curl -i -X POST localhost:8000/signup -H 'content-type: application/json' -d '{}'
 # -> HTTP 500 { "error": "Internal Server Error" }
 ```
 

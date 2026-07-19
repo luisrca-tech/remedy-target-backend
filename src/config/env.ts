@@ -23,7 +23,10 @@ export function readEnv(source: Record<string, string | undefined> = process.env
     SENTRY_ENVIRONMENT: source.SENTRY_ENVIRONMENT ?? "development",
     RAILWAY_GIT_COMMIT_SHA: source.RAILWAY_GIT_COMMIT_SHA,
     ENABLED_BUGS: source.ENABLED_BUGS ?? "",
-    PORT: source.PORT ? Number(source.PORT) : 3000,
+    // 8000, not 3000: Next.js dev (the sibling frontend) owns 3000 by
+    // convention, and both apps run side by side during local development.
+    // Railway injects PORT at runtime, so prod is unaffected by this default.
+    PORT: source.PORT ? Number(source.PORT) : 8000,
   };
 }
 

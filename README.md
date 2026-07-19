@@ -128,7 +128,7 @@ bun run dev
 bun run start
 ```
 
-Server listens on `http://localhost:3000` (configurable via `PORT` env var).
+Server listens on `http://localhost:8000` (configurable via `PORT` env var).
 
 ### Environment Contract
 
@@ -151,7 +151,7 @@ RAILWAY_GIT_COMMIT_SHA=
 ENABLED_BUGS=
 
 # Server port
-PORT=3000
+PORT=8000
 ```
 
 ## Checks
