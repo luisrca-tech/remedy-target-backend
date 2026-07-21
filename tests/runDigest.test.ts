@@ -1,102 +1,173 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 
-/**
- * Tests for the daily-digest CLI job (the command harness).
- *
- * The `db` module is fully mocked so no real Postgres connection is attempted —
- * the suite stays green without a database. The job's own Sentry client is
- * injected into `runDigestJob`, so the failure path (fatal capture + flush +
- * non-zero exit) is exercised with a spy, never the real SDK and never a network
- * call.
- */
+import { buildUserDigest, runDigestJob } from "../src/jobs/runDigest.ts";
+import type { JobSentry } from "../src/jobs/runDigest.ts";
+import type { Order, User } from "../src/db/schema.ts";
 
-let currentRows: Array<Record<string, unknown>> = [];
+const NOW = new Date("2026-03-10T12:00:00Z");
 
-mock.module("../src/db/client.ts", () => ({
-  db: {
-    select: () => ({
-      from: () => Promise.resolve(currentRows),
-    }),
-  },
-}));
+const user = (timeZone: string, over: Partial<User> = {}): User =>
+  ({
+    id: "usr_1",
+    tenantId: "sundry",
+    email: "shopper@example.com",
+    name: "Shopper",
+    address: null,
+    preferences: { digestOptIn: true, locale: "en-GB", currency: "GBP", timeZone },
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    ...over,
+  }) as User;
 
-const { runDigest, runDigestJob } = await import("../src/jobs/runDigest.ts");
+const order = (id: string, placedAt: string, totalCents = 1000): Order =>
+  ({
+    id,
+    tenantId: "sundry",
+    userId: "usr_1",
+    status: "placed",
+    lines: [],
+    coupon: null,
+    subtotalCents: totalCents,
+    discountCents: 0,
+    totalCents,
+    placedAt: new Date(placedAt),
+    createdAt: new Date(placedAt),
+  }) as Order;
 
-const OK_USER = { id: "usr_ok", preferences: { digestOptIn: true, locale: "en" } };
-const NULL_PREFS_USER = { id: "usr_null_prefs", preferences: null };
+describe("buildUserDigest", () => {
+  it("covers a fixed window of days, including empty ones", () => {
+    const digest = buildUserDigest(user("UTC"), [], NOW);
 
-// Force a deterministic bug selection regardless of the ambient environment.
-// Bun auto-loads `.env`, which may set `ENABLED_BUGS` (e.g. `ALL`); these tests
-// must not inherit it.
-const savedEnabledBugs = process.env.ENABLED_BUGS;
+    expect(digest.sections).toHaveLength(7);
+    expect(digest.sections[0]).toEqual({ day: "2026-03-10", orderCount: 0, totalCents: 0 });
+    expect(digest.totalCents).toBe(0);
+  });
 
-function setEnabledBugs(value: string): void {
-  process.env.ENABLED_BUGS = value;
+  it("totals the orders that fall on a day", () => {
+    const digest = buildUserDigest(
+      user("UTC"),
+      [order("ord_1", "2026-03-10T09:00:00Z", 1500), order("ord_2", "2026-03-10T11:00:00Z", 500)],
+      NOW,
+    );
+
+    expect(digest.sections[0]).toEqual({ day: "2026-03-10", orderCount: 2, totalCents: 2000 });
+    expect(digest.totalCents).toBe(2000);
+  });
+
+  it("files a boundary-crossing order under the shopper's local day", () => {
+    const digest = buildUserDigest(
+      user("America/Sao_Paulo"),
+      [order("ord_boundary", "2026-03-10T02:15:00Z", 4200)],
+      NOW,
+    );
+
+    const byDay = Object.fromEntries(digest.sections.map((s) => [s.day, s]));
+    expect(byDay["2026-03-09"]).toMatchObject({ orderCount: 1, totalCents: 4200 });
+    expect(byDay["2026-03-10"]).toMatchObject({ orderCount: 0 });
+    expect(digest.totalCents).toBe(4200);
+  });
+
+  it("falls back to UTC when the shopper has no preferences", () => {
+    const digest = buildUserDigest(user("UTC", { preferences: null }), [], NOW);
+    expect(digest.timeZone).toBe("UTC");
+  });
+});
+
+const ambientFlags = process.env.ROLLOUT_FLAGS;
+
+function setFlags(raw: string | undefined): void {
+  if (raw === undefined) {
+    delete process.env.ROLLOUT_FLAGS;
+  } else {
+    process.env.ROLLOUT_FLAGS = raw;
+  }
 }
 
-afterEach(() => {
-  if (savedEnabledBugs === undefined) {
-    delete process.env.ENABLED_BUGS;
-  } else {
-    process.env.ENABLED_BUGS = savedEnabledBugs;
-  }
-});
-
-describe("runDigest (BC1 dormant)", () => {
+describe("buildUserDigest once the activity digest is rolled out", () => {
   beforeEach(() => {
-    setEnabledBugs("");
+    setFlags("digest-timezone-buckets");
   });
 
-  it("guards null preferences and applies defaults", async () => {
-    currentRows = [OK_USER, NULL_PREFS_USER];
+  afterEach(() => {
+    setFlags(ambientFlags);
+  });
 
-    const digests = await runDigest();
+  it("reports only the days the shopper ordered on, most recent first", () => {
+    const digest = buildUserDigest(
+      user("UTC"),
+      [order("ord_1", "2026-03-08T09:00:00Z", 1500), order("ord_2", "2026-03-10T11:00:00Z", 500)],
+      NOW,
+    );
 
-    expect(digests).toEqual([
-      { userId: "usr_ok", digestOptIn: true, locale: "en" },
-      { userId: "usr_null_prefs", digestOptIn: false, locale: "en" },
+    expect(digest.sections).toEqual([
+      { day: "2026-03-10", orderCount: 1, totalCents: 500 },
+      { day: "2026-03-08", orderCount: 1, totalCents: 1500 },
     ]);
+    expect(digest.totalCents).toBe(2000);
   });
 
-  it("completes with exit code 0 and never captures", async () => {
-    currentRows = [OK_USER, NULL_PREFS_USER];
-    const captureException = mock(() => "event-id");
-    const flush = mock(() => Promise.resolve(true));
+  it("totals the orders that share a day", () => {
+    const digest = buildUserDigest(
+      user("UTC"),
+      [order("ord_1", "2026-03-10T09:00:00Z", 1500), order("ord_2", "2026-03-10T11:00:00Z", 500)],
+      NOW,
+    );
 
-    const exitCode = await runDigestJob({ captureException, flush });
+    expect(digest.sections).toEqual([{ day: "2026-03-10", orderCount: 2, totalCents: 2000 }]);
+    expect(digest.totalCents).toBe(2000);
+  });
 
-    expect(exitCode).toBe(0);
-    expect(captureException).not.toHaveBeenCalled();
-    expect(flush).not.toHaveBeenCalled();
+  it("labels the day in the shopper's zone", () => {
+    const digest = buildUserDigest(
+      user("America/Sao_Paulo"),
+      [order("ord_1", "2026-03-10T12:30:00Z", 4200)],
+      NOW,
+    );
+
+    expect(digest.timeZone).toBe("America/Sao_Paulo");
+    expect(digest.sections).toEqual([{ day: "2026-03-10", orderCount: 1, totalCents: 4200 }]);
+  });
+
+  it("reports nothing for a shopper with no orders", () => {
+    const digest = buildUserDigest(user("UTC"), [], NOW);
+
+    expect(digest.sections).toEqual([]);
+    expect(digest.totalCents).toBe(0);
   });
 });
 
-describe("runDigest (BC1 enabled)", () => {
-  beforeEach(() => {
-    setEnabledBugs("BC1");
+describe("runDigestJob", () => {
+  it("exits 0 when the digest completes", async () => {
+    mock.module("../src/account/repository.ts", () => ({ listUsers: () => Promise.resolve([]) }));
+    mock.module("../src/orders/repository.ts", () => ({ listOrders: () => Promise.resolve([]) }));
+
+    const sentry: JobSentry = {
+      captureException: () => undefined,
+      flush: () => Promise.resolve(true),
+    };
+
+    expect(await runDigestJob(sentry)).toBe(0);
   });
 
-  it("throws a TypeError on the null-preferences user", async () => {
-    currentRows = [OK_USER, NULL_PREFS_USER];
+  it("captures at fatal and exits non-zero when the digest throws", async () => {
+    mock.module("../src/account/repository.ts", () => ({
+      listUsers: () => Promise.reject(new Error("database is down")),
+    }));
 
-    await expect(runDigest()).rejects.toBeInstanceOf(TypeError);
-  });
+    const captured: unknown[] = [];
+    let flushed = false;
+    const sentry: JobSentry = {
+      captureException: (err, hint) => {
+        captured.push({ err, hint });
+        return undefined;
+      },
+      flush: () => {
+        flushed = true;
+        return Promise.resolve(true);
+      },
+    };
 
-  it("captures the failure at fatal level, flushes, and exits 1", async () => {
-    currentRows = [NULL_PREFS_USER];
-    let capturedArgs: unknown[] = [];
-    const captureException = mock((...args: unknown[]) => {
-      capturedArgs = args;
-      return "event-id";
-    });
-    const flush = mock(() => Promise.resolve(true));
-
-    const exitCode = await runDigestJob({ captureException, flush });
-
-    expect(exitCode).toBe(1);
-    expect(captureException).toHaveBeenCalledTimes(1);
-    expect(capturedArgs[0]).toBeInstanceOf(TypeError);
-    expect(capturedArgs[1]).toEqual({ level: "fatal" });
-    expect(flush).toHaveBeenCalledTimes(1);
+    expect(await runDigestJob(sentry)).toBe(1);
+    expect(captured).toHaveLength(1);
+    expect(flushed).toBe(true);
   });
 });

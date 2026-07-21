@@ -1,51 +1,68 @@
-import { eq } from "drizzle-orm";
 import { Hono } from "hono";
 
-import { isBugEnabled } from "../config/enabledBugs.ts";
-import { db } from "../db/client.ts";
-import { orders } from "../db/schema.ts";
+import { isRolloutEnabled } from "../config/rollout.ts";
+import { DEFAULT_TENANT_ID } from "../config/tenant.ts";
+import { toOrderReceipt, toOrderSummary } from "../orders/present.ts";
+import { findOrder, listOrders } from "../orders/repository.ts";
 
-/**
- * Orders route. `GET /orders/:id` loads an order by id and returns it with a
- * discounted total computed from the order's coupon.
- *
- * Seeded defect BH1 (dormant unless `ENABLED_BUGS` includes "BH1"): the discount
- * branch dereferences `order.coupon.percentOff` directly. The `coupon` column is
- * nullable, so for the seeded `ord_null_coupon` row (coupon = null) this throws a
- * `TypeError` at runtime. The error propagates to the app-level `onError`
- * handler, which captures it to Sentry (a real incident carrying the
- * `http.method` tag) and returns a 500. With BH1 off — the default during
- * checks — the coupon is guarded safely and the request returns 200.
- */
 export const ordersRoute = new Hono();
 
-ordersRoute.get("/:id", async (c) => {
-  const id = c.req.param("id");
+/** Every status an order can hold; the vocabulary `?status=` accepts. */
+const SUPPORTED_STATUSES = ["placed", "delivered", "cancelled"] as const;
 
-  const rows = await db.select().from(orders).where(eq(orders.id, id));
-  const order = rows[0];
+function parseDate(raw: string | undefined): Date | null {
+  if (!raw) {
+    return null;
+  }
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function isSupportedStatus(status: string): boolean {
+  return (SUPPORTED_STATUSES as readonly string[]).includes(status);
+}
+
+ordersRoute.get("/", async (c) => {
+  const query = c.req.query();
+  const userId = (query.userId ?? "").trim();
+
+  if (!userId) {
+    return c.json({ error: "userId is required", field: "userId" }, 400);
+  }
+
+  const filterRolledOut = isRolloutEnabled("orders-status-filter");
+  const rawStatus = (query.status ?? "").trim();
+  // Case folding belongs to the same rollout as the vocabulary check: until the
+  // filter ships, the value reaches the query exactly as the caller sent it.
+  const status = filterRolledOut ? rawStatus.toLowerCase() : rawStatus;
+
+  // A status outside the vocabulary is a typo on the caller's side, so name it.
+  // An empty result would read as "this shopper has no such orders", which is a
+  // different and misleading answer.
+  if (filterRolledOut && status !== "" && !isSupportedStatus(status)) {
+    return c.json(
+      { error: `status must be one of: ${SUPPORTED_STATUSES.join(", ")}`, field: "status" },
+      400,
+    );
+  }
+
+  const rows = await listOrders({
+    tenantId: DEFAULT_TENANT_ID,
+    userId,
+    from: parseDate(query.from),
+    to: parseDate(query.to),
+    status,
+  });
+
+  return c.json({ items: rows.map(toOrderSummary) });
+});
+
+ordersRoute.get("/:id", async (c) => {
+  const order = await findOrder(DEFAULT_TENANT_ID, c.req.param("id"));
 
   if (!order) {
     return c.json({ error: "Order not found" }, 404);
   }
 
-  let percentOff: number;
-  if (isBugEnabled("BH1")) {
-    // BH1 (seeded defect): unguarded coupon dereference. `order.coupon` is
-    // nullable, so this throws a `TypeError` at runtime for `ord_null_coupon`.
-    // @ts-expect-error BH1: order.coupon may be null; the unguarded deref is the seeded defect.
-    percentOff = order.coupon.percentOff;
-  } else {
-    percentOff = order.coupon?.percentOff ?? 0;
-  }
-
-  const discount = Math.round((order.total * percentOff) / 100);
-  const discountedTotal = order.total - discount;
-
-  return c.json({
-    id: order.id,
-    total: order.total,
-    discount,
-    discountedTotal,
-  });
+  return c.json(toOrderReceipt(order));
 });

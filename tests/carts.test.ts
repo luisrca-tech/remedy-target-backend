@@ -1,112 +1,197 @@
-import { describe, expect, it, mock } from "bun:test";
+import { beforeEach, describe, expect, it, mock } from "bun:test";
 
-/**
- * Route tests for `GET /carts/:id/restore`. The `db` module is fully mocked so
- * no real Postgres connection is attempted. This route carries no seeded
- * defect; the `restored: null` branch for an expired cart is contract, not a
- * failure — it is the data the frontend FB2 defect dereferences.
- */
+import type { Cart, CartLine, Product, Promo } from "../src/db/schema.ts";
+import type { CartView } from "../src/cart/present.ts";
+import { jsonBody } from "./helpers.ts";
 
-const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
-const FUTURE = new Date("2999-01-01T00:00:00.000Z");
-const PAST = new Date(Date.now() - THIRTY_DAYS_MS);
+const product = (id: string, name: string, priceCents: number): Product =>
+  ({
+    id,
+    tenantId: "sundry",
+    name,
+    slug: name.toLowerCase().replace(/\s+/g, "-"),
+    category: "kitchen",
+    description: "",
+    priceCents,
+    salePercentOff: null,
+    stock: 5,
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+  }) as Product;
 
-let currentRows: Array<Record<string, unknown>> = [];
+const cart = (over: Partial<Cart> = {}): Cart =>
+  ({
+    id: "cart_1",
+    tenantId: "sundry",
+    userId: "usr_1",
+    expiresAt: new Date("2099-01-01T00:00:00Z"),
+    lines: [{ productId: "prd_a", quantity: 2 }],
+    promoCode: null,
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    ...over,
+  }) as Cart;
 
-mock.module("../src/db/client.ts", () => ({
-  db: {
-    select: () => ({
-      from: () => ({
-        where: () => Promise.resolve(currentRows),
-      }),
-    }),
+let currentCart: Cart | null = null;
+let catalog: Product[] = [];
+let promo: Promo | null = null;
+let savedLines: CartLine[] | null = null;
+let savedPromo: string | null | undefined = undefined;
+
+mock.module("../src/cart/repository.ts", () => ({
+  findCart: () => Promise.resolve(currentCart),
+  findProductsByIds: () => Promise.resolve(catalog),
+  findPromo: () => Promise.resolve(promo),
+  saveCartLines: (_id: string, lines: CartLine[]) => {
+    savedLines = lines;
+    return Promise.resolve();
+  },
+  saveCartPromo: (_id: string, code: string | null) => {
+    savedPromo = code;
+    return Promise.resolve();
   },
 }));
 
 const { createApp } = await import("../src/app.ts");
 
-describe("GET /carts/:id/restore", () => {
-  it("restores an active cart with its items and total", async () => {
-    currentRows = [
+beforeEach(() => {
+  currentCart = cart();
+  catalog = [product("prd_a", "Enamel kettle", 1999)];
+  promo = null;
+  savedLines = null;
+  savedPromo = undefined;
+});
+
+describe("GET /carts/:id", () => {
+  it("prices the cart from the catalog", async () => {
+    const body = await jsonBody<CartView>(await createApp().request("/carts/cart_1"));
+
+    expect(body.lines).toEqual([
       {
-        id: "cart_active",
-        expiresAt: FUTURE,
-        items: [
-          { productId: "prd_ok", name: "Product OK", quantity: 2, unitPriceCents: 1500 },
-          {
-            productId: "prd_empty_cat",
-            name: "Product with Empty Category",
-            quantity: 1,
-            unitPriceCents: 2500,
-          },
-        ],
-        totalCents: 5500,
+        productId: "prd_a",
+        name: "Enamel kettle",
+        quantity: 2,
+        unitPriceCents: 1999,
+        lineTotalCents: 3998,
+        available: true,
       },
-    ];
-
-    const app = createApp();
-    const res = await app.request("/carts/cart_active/restore");
-
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({
-      restored: {
-        id: "cart_active",
-        expiresAt: FUTURE.toISOString(),
-        items: [
-          { productId: "prd_ok", name: "Product OK", quantity: 2, unitPriceCents: 1500 },
-          {
-            productId: "prd_empty_cat",
-            name: "Product with Empty Category",
-            quantity: 1,
-            unitPriceCents: 2500,
-          },
-        ],
-        totalCents: 5500,
-      },
-    });
+    ]);
+    expect(body.subtotalCents).toBe(3998);
+    expect(body.discountCents).toBe(0);
+    expect(body.totalCents).toBe(3998);
+    expect(body.promo).toBeNull();
   });
 
-  it("returns restored: null with a 200 for an expired cart", async () => {
-    currentRows = [
-      {
-        id: "cart_expired",
-        expiresAt: PAST,
-        items: [
-          { productId: "prd_ok", name: "Product OK", quantity: 1, unitPriceCents: 1500 },
-        ],
-        totalCents: 1500,
-      },
-    ];
+  it("keeps a line whose product is gone, marked unavailable", async () => {
+    catalog = [];
 
-    const app = createApp();
-    const res = await app.request("/carts/cart_expired/restore");
-
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ restored: null });
+    const body = await jsonBody<CartView>(await createApp().request("/carts/cart_1"));
+    expect(body.lines[0]).toMatchObject({ name: "Unavailable item", available: false });
+    expect(body.subtotalCents).toBe(0);
   });
 
-  it("returns 404 for an unknown cart id", async () => {
-    currentRows = [];
+  it("applies an active promo to the subtotal", async () => {
+    currentCart = cart({ promoCode: "SAVE15" });
+    promo = { code: "SAVE15", tenantId: "sundry", percentOff: 15, active: true };
 
-    const app = createApp();
-    const res = await app.request("/carts/does-not-exist/restore");
+    const body = await jsonBody<CartView>(await createApp().request("/carts/cart_1"));
+    expect(body.promo).toEqual({ code: "SAVE15", percentOff: 15 });
+    expect(body.discountCents).toBe(600);
+    expect(body.totalCents).toBe(3398);
+  });
 
+  it("ignores an inactive promo", async () => {
+    currentCart = cart({ promoCode: "OLD" });
+    promo = { code: "OLD", tenantId: "sundry", percentOff: 50, active: false };
+
+    const body = await jsonBody<CartView>(await createApp().request("/carts/cart_1"));
+    expect(body.promo).toBeNull();
+    expect(body.discountCents).toBe(0);
+  });
+
+  it("returns 404 for an unknown cart", async () => {
+    currentCart = null;
+
+    const res = await createApp().request("/carts/nope");
     expect(res.status).toBe(404);
-    expect(await res.json()).toEqual({ error: "Cart not found" });
   });
+});
 
-  it("sets CORS headers on a cross-origin GET from the allowed origin", async () => {
-    currentRows = [{ id: "cart_expired", expiresAt: PAST, items: [], totalCents: 0 }];
-
-    // Pin the allowed origin so the assertion never depends on the ambient
-    // `.env` that Bun auto-loads.
-    process.env.CORS_ORIGINS = "http://localhost:3000";
-    const app = createApp();
-    const res = await app.request("/carts/cart_expired/restore", {
-      headers: { Origin: "http://localhost:3000" },
+describe("PATCH /carts/:id/lines/:productId", () => {
+  const patch = (body: unknown, productId = "prd_a") =>
+    createApp().request(`/carts/cart_1/lines/${productId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
     });
 
+  it("updates the quantity of an existing line", async () => {
+    const res = await patch({ quantity: 5 });
+
     expect(res.status).toBe(200);
-    expect(res.headers.get("access-control-allow-origin")).toBe("http://localhost:3000");
+    expect(savedLines).toEqual([{ productId: "prd_a", quantity: 5 }]);
+  });
+
+  it("adds a line that is not in the cart yet", async () => {
+    const res = await patch({ quantity: 1 }, "prd_b");
+
+    expect(res.status).toBe(200);
+    expect(savedLines).toEqual([
+      { productId: "prd_a", quantity: 2 },
+      { productId: "prd_b", quantity: 1 },
+    ]);
+  });
+
+  it("removes the line when the quantity reaches zero", async () => {
+    const res = await patch({ quantity: 0 });
+
+    expect(res.status).toBe(200);
+    expect(savedLines).toEqual([]);
+  });
+
+  it("rejects a negative quantity with 400", async () => {
+    const res = await patch({ quantity: -1 });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ field: "quantity" });
+    expect(savedLines).toBeNull();
+  });
+
+  it("rejects a non-numeric quantity with 400", async () => {
+    const res = await patch({ quantity: "many" });
+
+    expect(res.status).toBe(400);
+    expect(savedLines).toBeNull();
+  });
+});
+
+describe("POST /carts/:id/promo", () => {
+  const apply = (body: unknown) =>
+    createApp().request("/carts/cart_1/promo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  it("stores a valid promo code", async () => {
+    promo = { code: "SAVE15", tenantId: "sundry", percentOff: 15, active: true };
+
+    const res = await apply({ code: "save15" });
+    expect(res.status).toBe(200);
+    expect(savedPromo).toBe("SAVE15");
+  });
+
+  it("rejects an unknown code with 400", async () => {
+    promo = null;
+
+    const res = await apply({ code: "NOPE" });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ field: "code" });
+    expect(savedPromo).toBeUndefined();
+  });
+
+  it("clears the promo when the code is empty", async () => {
+    const res = await apply({ code: "" });
+
+    expect(res.status).toBe(200);
+    expect(savedPromo).toBeNull();
   });
 });

@@ -16,4 +16,4 @@ const server = Bun.serve({
   fetch: app.fetch,
 });
 
-console.log(`remedy-target-backend listening on http://localhost:${server.port}`);
+console.log(`sundry-api listening on http://localhost:${server.port}`);

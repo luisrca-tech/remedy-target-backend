@@ -1,25 +1,22 @@
-import { eq } from "drizzle-orm";
 import { Hono } from "hono";
+import { z } from "zod";
 
-import { db } from "../db/client.ts";
-import { users } from "../db/schema.ts";
+import { findUser, savePreferences } from "../account/repository.ts";
+import { DEFAULT_TENANT_ID } from "../config/tenant.ts";
+import { ValidationError } from "../errors/ValidationError.ts";
+import type { UserPreferences } from "../db/schema.ts";
 
-/**
- * Users route. `GET /users/:id` returns a single user for the browser client.
- *
- * NO seeded defect lives here: this route is a plain, honest read. It exists so
- * the sibling frontend consumes real API responses (including the seeded
- * `usr_null_address` row, whose `address` is null) instead of local fixtures.
- * The nullable `address` / `preferences` fields are passed through verbatim —
- * normalizing them away would erase the frontend's repro data.
- */
 export const usersRoute = new Hono();
 
-usersRoute.get("/:id", async (c) => {
-  const id = c.req.param("id");
+const preferencesSchema = z.object({
+  digestOptIn: z.boolean({ error: "digestOptIn must be a boolean" }),
+  locale: z.string().trim().nullable(),
+  currency: z.string({ error: "currency is required" }).trim().min(3, "currency must be a 3-letter code"),
+  timeZone: z.string({ error: "timeZone is required" }).trim().min(1, "timeZone is required"),
+});
 
-  const rows = await db.select().from(users).where(eq(users.id, id));
-  const user = rows[0];
+usersRoute.get("/:id", async (c) => {
+  const user = await findUser(DEFAULT_TENANT_ID, c.req.param("id"));
 
   if (!user) {
     return c.json({ error: "User not found" }, 404);
@@ -28,7 +25,40 @@ usersRoute.get("/:id", async (c) => {
   return c.json({
     id: user.id,
     email: user.email,
+    name: user.name,
     address: user.address ?? null,
     preferences: user.preferences ?? null,
   });
+});
+
+usersRoute.patch("/:id/preferences", async (c) => {
+  const user = await findUser(DEFAULT_TENANT_ID, c.req.param("id"));
+
+  if (!user) {
+    return c.json({ error: "User not found" }, 404);
+  }
+
+  try {
+    const body = (await c.req.json().catch(() => ({}))) as unknown;
+    const result = preferencesSchema.safeParse(body);
+    if (!result.success) {
+      const issue = result.error.issues[0];
+      throw new ValidationError(issue?.message ?? "Invalid preferences", issue?.path.join("."));
+    }
+
+    const preferences: UserPreferences = {
+      digestOptIn: result.data.digestOptIn,
+      locale: result.data.locale,
+      currency: result.data.currency.toUpperCase(),
+      timeZone: result.data.timeZone,
+    };
+
+    await savePreferences(user.id, preferences);
+    return c.json({ id: user.id, preferences });
+  } catch (err) {
+    if (err instanceof ValidationError) {
+      return c.json({ error: err.message, field: err.field }, 400);
+    }
+    throw err;
+  }
 });

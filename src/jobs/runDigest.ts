@@ -2,88 +2,130 @@ import { execSync } from "node:child_process";
 
 import * as Sentry from "@sentry/node";
 
-import { isBugEnabled } from "../config/enabledBugs.ts";
+import { listUsers } from "../account/repository.ts";
 import { env } from "../config/env.ts";
-import { db } from "../db/client.ts";
-import { users } from "../db/schema.ts";
-import type { User } from "../db/schema.ts";
+import { isRolloutEnabled } from "../config/rollout.ts";
+import { DEFAULT_TENANT_ID } from "../config/tenant.ts";
+import {
+  bucketOrdersByDay,
+  bucketPlacedOrders,
+  daysWithOrders,
+  recentDays,
+} from "../digest/buckets.ts";
+import { listOrders } from "../orders/repository.ts";
+import type { DayBuckets, DigestOrder } from "../digest/buckets.ts";
+import type { Order, User } from "../db/schema.ts";
 
 /**
- * Daily-digest CLI job — the COMMAND harness for Remedy validation.
+ * Daily digest job. Summarizes each opted-in shopper's recent orders, grouped
+ * into the calendar days of their own time zone.
  *
- * Remedy's `inferHarness` classifies a Sentry incident by tag-sniffing: a `url`
- * or `browser.name` tag routes it to the browser harness, an `http.method` tag
- * routes it to the http harness, and an event carrying NEITHER routes to the
- * `command` harness. This job therefore must never stamp `url` or `http.method`
- * and never import the HTTP middleware — its incidents represent a background
- * CLI run and must land in the command harness.
- *
- * Sentry here is a SEPARATE initialization from the service (`src/instrument.ts`
- * uses `@sentry/bun`); a CLI job runs its own `@sentry/node` client. Like the
- * service init, it is a no-op without `SENTRY_DSN` so tests and local runs never
- * make network calls.
- *
- * Seeded defect BC1 (dormant unless `ENABLED_BUGS` includes "BC1"): the per-user
- * digest dereferences `user.preferences` without a guard. The seeded
- * `usr_null_prefs` row has `preferences = null`, so this throws a `TypeError` at
- * runtime. The error propagates to the job wrapper, which captures it to Sentry
- * at `fatal` level (a real command incident) and exits non-zero. With BC1 off —
- * the default during checks — preferences are read defensively and the job
- * completes and exits 0.
+ * Sentry is initialized separately from the service here because this runs as a
+ * CLI process rather than inside the server. Like the service, it is a no-op
+ * without `SENTRY_DSN` so tests and local runs never reach the network.
  */
 
-export interface UserDigest {
+const DIGEST_WINDOW_DAYS = 7;
+const DEFAULT_TIME_ZONE = "UTC";
+
+export type DigestSection = {
+  day: string;
+  orderCount: number;
+  totalCents: number;
+};
+
+export type UserDigest = {
   userId: string;
-  digestOptIn: boolean;
-  locale: string;
-}
+  timeZone: string;
+  sections: DigestSection[];
+  totalCents: number;
+};
 
-/**
- * Minimal structural surface of the Sentry client the job wrapper needs. Kept as
- * an injected dependency so the wrapper's failure path can be tested with a spy
- * (no real SDK, no network). The real `@sentry/node` client satisfies it.
- */
 export interface JobSentry {
-  // Method syntax (bivariant params) so the real `@sentry/node` client — whose
-  // hint is a wide capture-context union — is assignable to this narrow surface.
   captureException(exception: unknown, hint?: unknown): unknown;
   flush(timeout?: number): Promise<boolean>;
 }
 
+function toDigestOrders(orders: readonly Order[]): DigestOrder[] {
+  return orders.map((order) => ({
+    id: order.id,
+    placedAt: order.placedAt,
+    totalCents: order.totalCents,
+  }));
+}
+
+function digestTotal(sections: readonly DigestSection[]): number {
+  return sections.reduce((sum, section) => sum + section.totalCents, 0);
+}
+
 /**
- * Build a single user's digest entry. Hosts the BC1 defect.
+ * Summarizes each of `days` from the buckets it shares a day key with.
  */
-export function buildUserDigest(user: User): UserDigest {
-  if (isBugEnabled("BC1")) {
-    // BC1 (seeded defect): unguarded `preferences` dereference. `preferences` is
-    // nullable, so this throws a `TypeError` at runtime for `usr_null_prefs`.
-    // @ts-expect-error BC1: user.preferences may be null; the unguarded deref is the seeded defect.
-    return { userId: user.id, digestOptIn: user.preferences.digestOptIn, locale: user.preferences.locale };
+function summarizeDays<Day extends string>(
+  buckets: DayBuckets<Day>,
+  days: readonly Day[],
+): DigestSection[] {
+  return days.map((day) => {
+    const dayOrders = buckets[day].orders;
+    return {
+      day,
+      orderCount: dayOrders.length,
+      totalCents: dayOrders.reduce((sum, order) => sum + order.totalCents, 0),
+    };
+  });
+}
+
+export function buildUserDigest(user: User, orders: readonly Order[], now: Date): UserDigest {
+  const timeZone = user.preferences?.timeZone ?? DEFAULT_TIME_ZONE;
+  const digestOrders = toDigestOrders(orders);
+
+  if (isRolloutEnabled("digest-timezone-buckets")) {
+    const sections = summarizeDays(
+      bucketPlacedOrders(digestOrders),
+      daysWithOrders(digestOrders, timeZone),
+    );
+
+    return { userId: user.id, timeZone, sections, totalCents: digestTotal(sections) };
   }
 
-  const preferences = user.preferences;
+  const buckets = bucketOrdersByDay(digestOrders, timeZone);
+
+  const sections = recentDays(now, timeZone, DIGEST_WINDOW_DAYS).map((day) => {
+    const bucket = buckets[day];
+    const dayOrders = bucket?.orders ?? [];
+    return {
+      day,
+      orderCount: dayOrders.length,
+      totalCents: dayOrders.reduce((sum, order) => sum + order.totalCents, 0),
+    };
+  });
+
   return {
     userId: user.id,
-    digestOptIn: preferences?.digestOptIn ?? false,
-    locale: preferences?.locale ?? "en",
+    timeZone,
+    sections,
+    totalCents: digestTotal(sections),
   };
 }
 
-/**
- * Load every user and build a digest per user. Throws (propagates) when BC1 is
- * enabled and a null-preferences row is encountered.
- */
-export async function runDigest(): Promise<UserDigest[]> {
-  const rows = await db.select().from(users);
-  return rows.map(buildUserDigest);
+export async function runDigest(now: Date = new Date()): Promise<UserDigest[]> {
+  const users = await listUsers(DEFAULT_TENANT_ID);
+  const optedIn = users.filter((user) => user.preferences?.digestOptIn === true);
+
+  const digests: UserDigest[] = [];
+  for (const user of optedIn) {
+    const orders = await listOrders({
+      tenantId: DEFAULT_TENANT_ID,
+      userId: user.id,
+      from: new Date(now.getTime() - DIGEST_WINDOW_DAYS * 24 * 60 * 60 * 1000),
+      to: now,
+      status: "",
+    });
+    digests.push(buildUserDigest(user, orders, now));
+  }
+  return digests;
 }
 
-/**
- * Resolve the git SHA for the Sentry `release`. This job represents a
- * local-checkout run, so it prefers `RAILWAY_GIT_COMMIT_SHA` when present and
- * otherwise reads the checkout head. Returns `undefined` (with a warning) when
- * neither is available; the caller decides whether that is fatal.
- */
 function resolveRelease(): string | undefined {
   const injected = env.RAILWAY_GIT_COMMIT_SHA;
   if (injected) {
@@ -101,13 +143,6 @@ function resolveRelease(): string | undefined {
   }
 }
 
-/**
- * Idempotently initialize the job's own Sentry client. No-op (never throws) when
- * `SENTRY_DSN` is empty so tests / local runs stay offline. When a DSN IS set the
- * release must be resolvable — fail loudly rather than emit an untraceable
- * release. Sets a `job` tag (never `url` / `http.method`) so events classify to
- * the command harness.
- */
 export function initDigestSentry(): void {
   const dsn = env.SENTRY_DSN;
   if (!dsn) {
@@ -117,7 +152,7 @@ export function initDigestSentry(): void {
   const release = resolveRelease();
   if (!release) {
     throw new Error(
-      "runDigest: SENTRY_DSN is set but no git SHA is available for the Sentry release. " +
+      "runDigest: SENTRY_DSN is set but no git SHA is available for the release. " +
         "Set RAILWAY_GIT_COMMIT_SHA or run the job inside a git checkout.",
     );
   }
@@ -131,15 +166,10 @@ export function initDigestSentry(): void {
   Sentry.setTag("job", "daily-digest");
 }
 
-/**
- * Run the digest and translate the outcome into a process exit code. On any
- * error, capture it to Sentry at `fatal` level and flush before returning 1;
- * on success return 0. Sentry is injected so the failure path is unit-testable.
- */
 export async function runDigestJob(sentry: JobSentry): Promise<number> {
   try {
     const digests = await runDigest();
-    console.log(`runDigest: built digests for ${digests.length} user(s).`);
+    console.log(`runDigest: built digests for ${digests.length} shopper(s).`);
     return 0;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

@@ -28,32 +28,103 @@
   ],
   "preview": {
     "provider": "github-deployment",
-    "environmentPattern": "remediation-*",
+    "environmentPattern": "preview-*",
     "timeoutSeconds": 900
   },
   "fixtures": {
     "seed": {
-      "name": "seed-test-tenant",
+      "name": "seed-catalog",
       "command": "bun run db:seed",
       "timeoutSeconds": 120
     },
     "reset": {
-      "name": "reset-test-tenant",
+      "name": "reset-catalog",
       "command": "bun run db:reset",
       "timeoutSeconds": 120
     },
-    "testTenant": "remedy-target-test"
+    "testTenant": "sundry"
   },
   "harnesses": {
     "browser": false,
     "http": true,
     "httpScenarios": [
       {
-        "name": "orders-null-coupon",
+        "name": "catalog-first-page",
         "method": "GET",
-        "path": "/orders/ord_null_coupon",
+        "path": "/products?page=1&perPage=12",
         "headers": {},
-        "reproduceOnStatus": [500]
+        "reproduceOnStatus": [
+          500
+        ]
+      },
+      {
+        "name": "catalog-last-page",
+        "method": "GET",
+        "path": "/products?page=4&perPage=12",
+        "headers": {},
+        "reproduceOnStatus": [
+          500
+        ]
+      },
+      {
+        "name": "catalog-search",
+        "method": "GET",
+        "path": "/products?q=kettle",
+        "headers": {},
+        "reproduceOnStatus": [
+          500
+        ]
+      },
+      {
+        "name": "product-detail",
+        "method": "GET",
+        "path": "/products/prd_9c21",
+        "headers": {},
+        "reproduceOnStatus": [
+          500
+        ]
+      },
+      {
+        "name": "cart-detail",
+        "method": "GET",
+        "path": "/carts/cart_live",
+        "headers": {},
+        "reproduceOnStatus": [
+          500
+        ]
+      },
+      {
+        "name": "order-history",
+        "method": "GET",
+        "path": "/orders?userId=usr_4b8e",
+        "headers": {},
+        "reproduceOnStatus": [
+          500
+        ]
+      },
+      {
+        "name": "checkout-submit",
+        "method": "POST",
+        "path": "/checkout",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"cartId\":\"cart_live\",\"shipping\":{\"street\":\"12 Rua das Flores\",\"city\":\"Porto\",\"postalCode\":\"4000 007\",\"country\":\"pt\"}}",
+        "reproduceOnStatus": [
+          500
+        ]
+      },
+      {
+        "name": "checkout-submit-partial",
+        "method": "POST",
+        "path": "/checkout",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"cartId\":\"cart_live\"}",
+        "reproduceOnStatus": [
+          500
+        ]
       }
     ],
     "commands": [
@@ -65,8 +136,16 @@
     ]
   },
   "security": {
-    "secretRefs": ["DATABASE_URL", "SENTRY_DSN"],
-    "allowedEgress": ["api.github.com", "sentry.io", "*.neon.tech", "*.railway.app"],
+    "secretRefs": [
+      "DATABASE_URL",
+      "SENTRY_DSN"
+    ],
+    "allowedEgress": [
+      "api.github.com",
+      "sentry.io",
+      "*.neon.tech",
+      "*.railway.app"
+    ],
     "allowedSandboxEndpoints": []
   },
   "sandbox": {
@@ -81,7 +160,10 @@
   "patch": {
     "maxFiles": 8,
     "maxLines": 350,
-    "forbiddenPaths": ["migrations/", "infra/", "src/auth/"],
+    "forbiddenPaths": [
+      "drizzle/",
+      "infra/"
+    ],
     "highRisk": {
       "dependencies": false,
       "migrations": false,

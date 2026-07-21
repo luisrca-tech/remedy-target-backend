@@ -1,9 +1,9 @@
 {
-  "name": "remedy-target-backend",
+  "name": "sundry-api",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Deliberately-buggy Hono + Drizzle backend that emits real Sentry HTTP and command incidents for validating the Remedy remediation pipeline (Phase B).",
+  "description": "Sundry API \u2014 catalog, carts, checkout and order history for the Sundry storefront. Hono + Drizzle on Bun.",
   "scripts": {
     "dev": "bun run --hot src/index.ts",
     "start": "bun run src/index.ts",

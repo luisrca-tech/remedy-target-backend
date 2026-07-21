@@ -1,82 +1,72 @@
-# remedy-target-backend: Claude Code Conventions
+# Working in this repo
 
-This repo follows the agent coordination rules in `AGENTS.md`. Before working here, read that file — it covers git operations, check-green defects, window discipline, and style conventions.
+Conventions for the Sundry API. Read `README.md` first for what the service
+does.
 
-This document highlights the load-bearing constraints for Claude Code agents and Cursor in patch mode.
+## Style
 
-## Load-Bearing Rules
+- **Import extensions**: relative imports carry `.ts` (`"./config.ts"`, not
+  `"./config"`). Required by `verbatimModuleSyntax` + bundler resolution.
+- **Type imports**: `import type { X }` when only the type is used.
+- **Comments**: explain *why*, never *what*. If a line needs a comment to say
+  what it does, rewrite the line.
 
-### 1. Check-Green Defects (Seeded Bugs)
+## Structure
 
-Every intentional bug must:
+Each domain owns three files:
 
-- **Be flag-gated OFF by default** via `ENABLED_BUGS` environment variable
-- **Carry an inline suppression comment** on the exact line(s) that violate rules:
-  - TypeScript: `@ts-expect-error`
-  - ESLint: `eslint-disable-next-line <rule>`
-  - Other linters: appropriate suppression
-- **Only execute when `ENABLED_BUGS=<BUG_ID>`** (checked via `isBugEnabled()` helper)
+- `repository.ts` — every database call for that domain, and nothing else.
+- `present.ts` — pure functions that shape rows into response payloads.
+- the route in `routes/` — parse, delegate, respond.
 
-**Before committing any code:**
+Routes never touch Drizzle directly. This is what lets the whole test suite run
+without a database.
+
+## Errors
+
+- No silent failures. No empty `catch`. Every error is logged or propagated.
+- Input the caller controls is validated at the boundary and answered with
+  `ValidationError` → **400**. Reaching the app-level handler means the service
+  broke, and that is a 500.
+- When wrapping an error, add context: `Failed to create order ord_x: ...`.
+
+## Money
+
+Integer cents only. Never floats.
+
+Discounts round **once, against the subtotal**. If you add a code path that
+totals an order, use `quoteOrder` rather than writing the arithmetic again —
+per-line rounding disagrees with it for some baskets.
+
+## Dates
+
+A shopper's day is defined by their `preferences.timeZone`, not by UTC. When you
+group or bucket by day, key and look up through the *same* function
+(`digest/buckets.ts`), or the two will disagree for orders placed near midnight.
+
+## Tests
+
+- `bun run test` must pass without a database or a network.
+- Route tests mock the domain's `repository.ts`.
+- Response bodies are read through `jsonBody<T>()` so a drifting response shape
+  fails to compile.
+
+Before pushing:
 
 ```bash
-unset ENABLED_BUGS
 bun run test && bun run typecheck && bun run lint
-# All checks must pass green
 ```
 
-### 2. Window Discipline (Serialized Test Windows)
+## Rollout flags
 
-A **test window** is one validation run of Remedy with exactly one seeded bug enabled.
+New features that are not ready for everyone go behind a flag in
+`src/config/rollout.ts`. Add the flag to the union and to `KNOWN_FLAGS`. Default
+(unset) must be the existing behaviour, so an environment that knows nothing
+about the flag is unaffected.
 
-- **Exactly ONE `ENABLED_BUGS` flag is active per window** (all others must be OFF/empty).
-- **Windows are serialized, never concurrent** — complete one, collect results, then start the next.
-- **Each window is marked by a commit + push** that sets the flag to an active value.
+## Error reporting
 
-**Concurrent windows corrupt the shared Remedy workspace. Do not enable multiple bugs in parallel.**
-
-### 3. Sentry Integration
-
-The `sentryHttpMethod()` middleware in `src/app.ts` stamps `http.method` on every request's Sentry scope **before any route handler runs**. This tag is critical for Remedy's incident classification:
-
-- **Remedy reads `http.method` to route HTTP incidents to the `http` harness.**
-- **If the tag is missing or wrong, the incident silently misroutes.**
-
-**Never remove or comment out the `app.use(sentryHttpMethod())` line in `src/app.ts`.**
-
-### 4. Style Conventions
-
-- **Import extensions**: Use `.ts` extension on all relative imports (`"./config.ts"` not `"./config"`).
-- **Type imports**: Use `import type { X }` for types only (enforced by `verbatimModuleSyntax`).
-- **Error handling**: No silent failures; no empty catch blocks. Fail fast, add context, use domain-specific error types.
-- **Comments**: Preserve load-bearing comments (Sentry wiring, window discipline, suppression reason); omit "what" comments.
-
-## Constraints Summary
-
-| Constraint | Consequence |
-|-----------|------------|
-| Bug not flag-gated | Checks fail (uncommittable) |
-| Missing inline suppression | Checks fail (uncommittable) |
-| Multiple bugs enabled (concurrent windows) | Remedy validation corrupted |
-| Missing `http.method` tag | HTTP incidents misrouted by Remedy |
-| Silent error handling | Incidents not surfaced; hard to debug |
-| Wrong import style (no `.ts` extension) | Fails in ESM bundler mode |
-
-## Starting a Window
-
-1. Read and understand the bug you're implementing in `src/config/enabledBugs.ts`.
-2. Create a feature branch (if not already in one).
-3. Implement the bug with `isBugEnabled("<BUG_ID>")` gating and inline suppression.
-4. Ensure `bun run test && bun run typecheck && bun run lint` pass with `ENABLED_BUGS` unset.
-5. Create a commit that temporarily sets `ENABLED_BUGS=<BUG_ID>`.
-6. Push and notify the Remedy validation system.
-7. After results are collected, reset `ENABLED_BUGS` to empty and push.
-
-## Further Reading
-
-- `AGENTS.md` — Full agent coordination rules (read this first)
-- `README.md` — Service overview, schema, and local dev setup
-- `.env.example` — Environment contract
-- `src/config/enabledBugs.ts` — Bug flag gating logic
-- `src/instrument.ts` — Sentry initialization and no-op behavior
-- `src/middleware/sentryHttpMethod.ts` — HTTP method tag stamping
+`sentryHttpMethod()` runs before every handler and must stay first in the
+middleware chain — it tags the scope so a downstream failure is reported with
+the request that caused it. `src/instrument.ts` is a no-op without `SENTRY_DSN`,
+which is what keeps tests offline.

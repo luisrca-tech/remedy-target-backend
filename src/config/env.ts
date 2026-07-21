@@ -1,5 +1,5 @@
 /**
- * Environment contract for the backend service.
+ * Environment contract for the API.
  *
  * Values are read lazily so that `typecheck` / `test` (which run without a real
  * environment) never fail on a missing secret. Callers that genuinely need a
@@ -12,17 +12,18 @@ export type AppEnv = {
   SENTRY_ENVIRONMENT: string;
   /** The git SHA Railway injects; becomes the Sentry `release`. */
   RAILWAY_GIT_COMMIT_SHA: string | undefined;
-  ENABLED_BUGS: string;
+  /** Comma-separated rollout flags; see `config/rollout.ts`. */
+  ROLLOUT_FLAGS: string;
   PORT: number;
   /**
    * Browser origins allowed to call this API cross-origin, comma-separated.
-   * The sibling frontend calls these endpoints directly from the browser, so
-   * the deployed frontend origin must be listed here in prod.
+   * The storefront calls these endpoints straight from the browser, so its
+   * deployed origin must be listed here in production.
    */
   CORS_ORIGINS: string[];
 };
 
-/** Next.js dev server origin; the local sibling frontend. */
+/** Local storefront dev server origin. */
 const DEFAULT_CORS_ORIGINS = ["http://localhost:3000"];
 
 function parseCorsOrigins(raw: string | undefined): string[] {
@@ -39,10 +40,9 @@ export function readEnv(source: Record<string, string | undefined> = process.env
     SENTRY_DSN: source.SENTRY_DSN,
     SENTRY_ENVIRONMENT: source.SENTRY_ENVIRONMENT ?? "development",
     RAILWAY_GIT_COMMIT_SHA: source.RAILWAY_GIT_COMMIT_SHA,
-    ENABLED_BUGS: source.ENABLED_BUGS ?? "",
-    // 8000, not 3000: Next.js dev (the sibling frontend) owns 3000 by
-    // convention, and both apps run side by side during local development.
-    // Railway injects PORT at runtime, so prod is unaffected by this default.
+    ROLLOUT_FLAGS: source.ROLLOUT_FLAGS ?? "",
+    // 8000, not 3000: the storefront dev server owns 3000 and the two run side
+    // by side locally. Railway injects PORT at runtime.
     PORT: source.PORT ? Number(source.PORT) : 8000,
     CORS_ORIGINS: parseCorsOrigins(source.CORS_ORIGINS),
   };

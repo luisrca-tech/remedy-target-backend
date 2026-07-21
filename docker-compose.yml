@@ -2,15 +2,15 @@ services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: remedy
-      POSTGRES_PASSWORD: remedy
-      POSTGRES_DB: remedy_target
+      POSTGRES_USER: sundry
+      POSTGRES_PASSWORD: sundry
+      POSTGRES_DB: sundry
     ports:
       - "5432:5432"
     volumes:
-      - remedy_db_data:/var/lib/postgresql/data
+      - sundry_db_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U remedy"]
+      test: ["CMD-SHELL", "pg_isready -U sundry"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -24,8 +24,8 @@ services:
       - "8000:8000"
     env_file: .env
     environment:
-      DATABASE_URL: postgres://remedy:remedy@db:5432/remedy_target
+      DATABASE_URL: postgres://sundry:sundry@db:5432/sundry
     command: ["bun", "run", "dev"]
 
 volumes:
-  remedy_db_data:
+  sundry_db_data:

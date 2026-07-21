@@ -1,132 +1,32 @@
-import { getClient, closeDb } from './client.ts';
-import { users, orders, products, carts } from './schema.ts';
-import { eq } from 'drizzle-orm';
+import { describeError } from "../errors/describeError.ts";
+import { closeDb, db } from "./client.ts";
+import { CARTS, ORDERS, PRODUCTS, PROMOS, USERS } from "./fixtures.ts";
+import { carts, orders, products, promos, users } from "./schema.ts";
 
-const TENANT_ID = 'remedy-target-test';
-const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+/**
+ * Inserts the fixture catalog, shoppers, carts and orders. Existing rows with
+ * the same primary key are left alone, so re-running is harmless.
+ */
+export async function seed(): Promise<void> {
+  await db.insert(users).values(USERS).onConflictDoNothing();
+  await db.insert(products).values(PRODUCTS).onConflictDoNothing();
+  await db.insert(promos).values(PROMOS).onConflictDoNothing();
+  await db.insert(carts).values(CARTS).onConflictDoNothing();
+  await db.insert(orders).values(ORDERS).onConflictDoNothing();
 
-async function seed() {
+  console.log(
+    `seed: ${USERS.length} shoppers, ${PRODUCTS.length} products, ${PROMOS.length} promos, ` +
+      `${CARTS.length} carts, ${ORDERS.length} orders.`,
+  );
+}
+
+if (import.meta.main) {
   try {
-    const db = getClient();
-
-    // Delete all rows for the test tenant to ensure idempotency.
-    await db.delete(users).where(eq(users.tenantId, TENANT_ID));
-    await db.delete(orders).where(eq(orders.tenantId, TENANT_ID));
-    await db.delete(products).where(eq(products.tenantId, TENANT_ID));
-    await db.delete(carts).where(eq(carts.tenantId, TENANT_ID));
-
-    // Seed users
-    const userIds = ['usr_ok', 'usr_null_prefs', 'usr_null_zip', 'usr_null_address'];
-    await db.insert(users).values([
-      {
-        id: 'usr_ok',
-        tenantId: TENANT_ID,
-        email: 'ok@example.com',
-        preferences: { digestOptIn: true, locale: 'en' },
-        address: { street: '1 Main', zip: '90210' },
-      },
-      {
-        id: 'usr_null_prefs',
-        tenantId: TENANT_ID,
-        email: 'nullprefs@example.com',
-        preferences: null,
-        address: { street: '2 Main', zip: '10001' },
-      },
-      {
-        id: 'usr_null_zip',
-        tenantId: TENANT_ID,
-        email: 'nullzip@example.com',
-        preferences: { digestOptIn: false, locale: 'fr' },
-        address: { street: '3 Main', zip: null },
-      },
-      {
-        // Load-bearing: address is null. Backs the frontend FB1 defect, which
-        // dereferences `user.address.street` on the real API response.
-        id: 'usr_null_address',
-        tenantId: TENANT_ID,
-        email: 'nulladdress@example.com',
-        preferences: { digestOptIn: true, locale: 'en' },
-        address: null,
-      },
-    ]);
-
-    // Seed orders
-    const orderIds = ['ord_ok', 'ord_null_coupon'];
-    await db.insert(orders).values([
-      {
-        id: 'ord_ok',
-        tenantId: TENANT_ID,
-        userId: 'usr_ok',
-        coupon: { code: 'SAVE10', percentOff: 10 },
-        total: 1000,
-      },
-      {
-        id: 'ord_null_coupon',
-        tenantId: TENANT_ID,
-        userId: 'usr_ok',
-        coupon: null,
-        total: 500,
-      },
-    ]);
-
-    // Seed products
-    const productIds = ['prd_ok', 'prd_empty_cat'];
-    await db.insert(products).values([
-      {
-        id: 'prd_ok',
-        tenantId: TENANT_ID,
-        name: 'Product OK',
-        category: 'electronics',
-      },
-      {
-        id: 'prd_empty_cat',
-        tenantId: TENANT_ID,
-        name: 'Product with Empty Category',
-        category: '',
-      },
-    ]);
-
-    // Seed carts
-    const cartIds = ['cart_active', 'cart_expired'];
-    await db.insert(carts).values([
-      {
-        id: 'cart_active',
-        tenantId: TENANT_ID,
-        userId: 'usr_ok',
-        expiresAt: new Date(Date.now() + THIRTY_DAYS_MS),
-        items: [
-          { productId: 'prd_ok', name: 'Product OK', quantity: 2, unitPriceCents: 1500 },
-          { productId: 'prd_empty_cat', name: 'Product with Empty Category', quantity: 1, unitPriceCents: 2500 },
-        ],
-        totalCents: 5500,
-      },
-      {
-        // Load-bearing: expiry in the past, so `GET /carts/:id/restore` returns
-        // `{ restored: null }`. Backs the frontend FB2 defect, which
-        // dereferences that null.
-        id: 'cart_expired',
-        tenantId: TENANT_ID,
-        userId: 'usr_ok',
-        expiresAt: new Date(Date.now() - THIRTY_DAYS_MS),
-        items: [
-          { productId: 'prd_ok', name: 'Product OK', quantity: 1, unitPriceCents: 1500 },
-        ],
-        totalCents: 1500,
-      },
-    ]);
-
-    console.log('✓ Seed completed successfully');
-    console.log(`  - Users: ${userIds.join(', ')}`);
-    console.log(`  - Orders: ${orderIds.join(', ')}`);
-    console.log(`  - Products: ${productIds.join(', ')}`);
-    console.log(`  - Carts: ${cartIds.join(', ')}`);
-    console.log(`  - Tenant: ${TENANT_ID}`);
+    await seed();
   } catch (err) {
-    console.error('✗ Seed failed:', err instanceof Error ? err.message : String(err));
-    process.exit(1);
+    console.error(`seed: FAILED — ${describeError(err)}`);
+    process.exitCode = 1;
   } finally {
     await closeDb();
   }
 }
-
-seed();
